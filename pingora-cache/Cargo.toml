@@ -67,6 +67,4 @@ harness = false
 
 [features]
 default = []
-openssl = ["pingora-core/openssl"]
-boringssl = ["pingora-core/boringssl"]
 rustls = ["pingora-core/rustls"]

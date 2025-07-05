@@ -17,8 +17,6 @@ members = [
     "pingora-cache",
     "pingora-http",
     "pingora-lru",
-    "pingora-openssl",
-    "pingora-boringssl",
     "pingora-runtime",
     "pingora-rustls",
     "pingora-ketama",

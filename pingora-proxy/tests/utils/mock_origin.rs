@@ -25,11 +25,6 @@ fn init() -> bool {
         "{}/tests/utils/conf/keys/server_rustls.crt",
         env!("CARGO_MANIFEST_DIR")
     );
-    #[cfg(feature = "openssl_derived")]
-    let src_cert_path = format!(
-        "{}/tests/utils/conf/keys/server_boringssl_openssl.crt",
-        env!("CARGO_MANIFEST_DIR")
-    );
 
     #[cfg(feature = "any_tls")]
     {

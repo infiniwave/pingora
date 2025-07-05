@@ -26,12 +26,6 @@ use std::task::{Context, Poll};
 use std::time::SystemTime;
 use tokio::io::{self, AsyncRead, AsyncWrite, ReadBuf};
 
-#[cfg(feature = "boringssl")]
-use pingora_boringssl as ssl_lib;
-
-#[cfg(feature = "openssl")]
-use pingora_openssl as ssl_lib;
-
 use ssl_lib::{hash::MessageDigest, ssl::SslRef};
 
 /// The TLS connection
