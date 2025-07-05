@@ -33,6 +33,8 @@ pub struct SslDigest {
     pub cert_digest: Vec<u8>,
     /// The user-defined TLS data
     pub extension: SslDigestExtension,
+    /// the SNI used in the negotiation
+    pub sni: Option<String>,
 }
 
 impl SslDigest {
@@ -43,6 +45,7 @@ impl SslDigest {
         organization: Option<String>,
         serial_number: Option<String>,
         cert_digest: Vec<u8>,
+        sni: Option<String>,
     ) -> Self
     where
         S: Into<Cow<'static, str>>,
@@ -54,6 +57,7 @@ impl SslDigest {
             serial_number,
             cert_digest,
             extension: SslDigestExtension::default(),
+            sni,
         }
     }
 }

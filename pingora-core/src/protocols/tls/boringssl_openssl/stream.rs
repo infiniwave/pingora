@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use crate::protocols::digest::TimingDigest;
+use crate::protocols::tls::boringssl_openssl::stream::ssl::NameType;
 use crate::protocols::tls::{SslDigest, ALPN};
 use crate::protocols::{Peek, Ssl, UniqueID, UniqueIDType};
 use crate::tls::{self, ssl, tokio_ssl::SslStream as InnerSsl};
@@ -208,8 +209,10 @@ impl SslDigest {
             }
             None => (Vec::new(), None, None),
         };
+        let sni = ssl.servername(NameType::HOST_NAME);
+        let sni_string: Option<String> = sni.map(ToOwned::to_owned);
 
-        SslDigest::new(cipher, ssl.version_str(), org, sn, cert_digest)
+        SslDigest::new(cipher, ssl.version_str(), org, sn, cert_digest, sni_string)
     }
 }
 
