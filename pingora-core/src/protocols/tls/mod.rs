@@ -17,12 +17,6 @@
 pub mod digest;
 pub use digest::*;
 
-#[cfg(feature = "openssl_derived")]
-mod boringssl_openssl;
-
-#[cfg(feature = "openssl_derived")]
-pub use boringssl_openssl::*;
-
 #[cfg(feature = "rustls")]
 mod rustls;
 
@@ -150,18 +144,6 @@ impl ALPN {
             ALPN::H1 | ALPN::H2H1 => 1,
             ALPN::H2 => 2,
             ALPN::Custom(_) => 0,
-        }
-    }
-
-    #[cfg(feature = "openssl_derived")]
-    pub(crate) fn to_wire_preference(&self) -> &[u8] {
-        // https://www.openssl.org/docs/manmaster/man3/SSL_CTX_set_alpn_select_cb.html
-        // "vector of nonempty, 8-bit length-prefixed, byte strings"
-        match self {
-            Self::H1 => b"\x08http/1.1",
-            Self::H2 => b"\x02h2",
-            Self::H2H1 => b"\x02h2\x08http/1.1",
-            Self::Custom(custom) => custom.as_wire(),
         }
     }
 

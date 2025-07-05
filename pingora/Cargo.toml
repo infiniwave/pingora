@@ -52,34 +52,7 @@ hyperlocal = "0.8"
 jemallocator = "0.5"
 
 [features]
-default = []
-
-#! ### Tls
-#! Tls is provided by adding one of these features. If no tls-providing feature
-#! is added, only unencrypted http. Only one tls-providing feature can be
-#! selected at a time
-
-## Use [OpenSSL](https://crates.io/crates/openssl) for tls
-##
-## Requires native openssl libraries and build tooling
-openssl = [
-    "pingora-core/openssl",
-    "pingora-proxy?/openssl",
-    "pingora-cache?/openssl",
-    "pingora-load-balancing?/openssl",
-    "openssl_derived",
-]
-
-## Use [BoringSSL](https://crates.io/crates/boring) for tls 
-##
-## Requires native boring libraries and build tooling
-boringssl = [
-    "pingora-core/boringssl",
-    "pingora-proxy?/boringssl",
-    "pingora-cache?/boringssl",
-    "pingora-load-balancing?/boringssl",
-    "openssl_derived",
-]
+default = ["rustls"]
 
 ## Use  [s2n-tls](https://crates.io/crates/s2n-tls) for tls
 ##
@@ -93,8 +66,6 @@ s2n = [
 ]
 
 ## Use  [rustls](https://crates.io/crates/rustls) for tls 
-##
-## ⚠️ _Highly Experimental_! ⚠️ Try it, but don't rely on it (yet)
 rustls = [
     "pingora-core/rustls",
     "pingora-proxy?/rustls",
@@ -134,7 +105,6 @@ connection_filter = [
 
 
 # These features are intentionally not documented
-openssl_derived = ["any_tls"]
 any_tls = []
 patched_http1 = ["pingora-core/patched_http1"]
 document-features = [

@@ -201,30 +201,6 @@ async fn test_h1_on_h2c_port() {
 }
 
 #[tokio::test]
-#[cfg(feature = "openssl_derived")]
-async fn test_h2_to_h2_host_override() {
-    init();
-    let client = reqwest::Client::builder()
-        .danger_accept_invalid_certs(true)
-        .build()
-        .unwrap();
-
-    let res = client
-        .get("https://127.0.0.1:6150")
-        .header("x-h2", "true")
-        .header("host-override", "test.com")
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(res.status(), reqwest::StatusCode::OK);
-    assert_eq!(res.version(), reqwest::Version::HTTP_2);
-    let headers = res.headers();
-    assert_eq!(headers[header::CONTENT_LENGTH], "13");
-    let body = res.text().await.unwrap();
-    assert_eq!(body, "Hello World!\n");
-}
-
-#[tokio::test]
 #[cfg(feature = "any_tls")]
 async fn test_h2_to_h2_upload() {
     init();
@@ -488,20 +464,6 @@ async fn test_dropped_conn() {
     test_dropped_conn_post_body_over().await;
 }
 
-// currently not supported with Rustls implementation
-#[cfg(feature = "openssl_derived")]
-#[tokio::test]
-async fn test_tls_no_verify() {
-    init();
-    let client = reqwest::Client::new();
-    let res = client
-        .get("http://127.0.0.1:6149/tls_verify")
-        .send()
-        .await
-        .unwrap();
-
-    assert_eq!(res.status(), StatusCode::OK);
-}
 
 #[cfg(feature = "any_tls")]
 #[tokio::test]
@@ -513,24 +475,6 @@ async fn test_tls_verify_sni_not_host() {
         .get("http://127.0.0.1:6149/tls_verify")
         .header("sni", "openrusty.org")
         .header("verify", "1")
-        .send()
-        .await
-        .unwrap();
-
-    assert_eq!(res.status(), StatusCode::OK);
-}
-
-// currently not supported with Rustls implementation
-#[cfg(feature = "openssl_derived")]
-#[tokio::test]
-async fn test_tls_none_verify_host() {
-    init();
-    let client = reqwest::Client::new();
-
-    let res = client
-        .get("http://127.0.0.1:6149/tls_verify")
-        .header("verify", "1")
-        .header("verify_host", "1")
         .send()
         .await
         .unwrap();
@@ -594,43 +538,6 @@ async fn test_tls_underscore_non_sub_sni_verify_host() {
     assert_eq!(headers[header::CONNECTION], "close");
 }
 
-#[cfg(feature = "openssl_derived")]
-#[tokio::test]
-async fn test_tls_alt_verify_host() {
-    init();
-    let client = reqwest::Client::new();
-
-    let res = client
-        .get("http://127.0.0.1:6149/tls_verify")
-        .header("sni", "open_rusty.org")
-        .header("alt", "openrusty.org")
-        .header("verify", "1")
-        .header("verify_host", "1")
-        .send()
-        .await
-        .unwrap();
-
-    assert_eq!(res.status(), StatusCode::OK);
-}
-
-#[cfg(feature = "openssl_derived")]
-#[tokio::test]
-async fn test_tls_underscore_sub_alt_verify_host() {
-    init();
-    let client = reqwest::Client::new();
-
-    let res = client
-        .get("http://127.0.0.1:6149/tls_verify")
-        .header("sni", "open_rusty.org")
-        .header("alt", "d_g.openrusty.org")
-        .header("verify", "1")
-        .header("verify_host", "1")
-        .send()
-        .await
-        .unwrap();
-
-    assert_eq!(res.status(), StatusCode::OK);
-}
 
 #[cfg(feature = "any_tls")]
 #[tokio::test]

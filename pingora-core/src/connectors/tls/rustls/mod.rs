@@ -253,7 +253,7 @@ where
 }
 
 #[derive(Debug)]
-enum VerificationMode {
+pub enum VerificationMode {
     SkipHostname,
     SkipAll,
     Full,

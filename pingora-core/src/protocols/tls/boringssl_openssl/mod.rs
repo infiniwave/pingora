@@ -16,12 +16,6 @@ pub mod client;
 pub mod server;
 mod stream;
 
-#[cfg(feature = "boringssl")]
-use pingora_boringssl as ssl_lib;
-
-#[cfg(feature = "openssl")]
-use pingora_openssl as ssl_lib;
-
 use ssl_lib::{ssl::SslRef, x509::X509};
 pub use stream::*;
 
