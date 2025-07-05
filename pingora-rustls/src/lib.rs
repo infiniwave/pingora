@@ -17,10 +17,6 @@
 
 #![warn(clippy::all)]
 
-use std::fs::File;
-use std::io::BufReader;
-use std::path::Path;
-
 use log::warn;
 pub use no_debug::{Ellipses, NoDebug, WithTypeInfo};
 use pingora_error::{Error, ErrorType, OrErr, Result};
@@ -32,12 +28,28 @@ pub use rustls::{
 pub use rustls_native_certs::load_native_certs;
 use rustls_pemfile::Item;
 pub use rustls_pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime};
+use rustls::crypto::CryptoProvider;
+pub use rustls::server::{ResolvesServerCert, ResolvesServerCertUsingSni};
+pub use rustls::sign::CertifiedKey;
+use std::fs::File;
+use std::io::BufReader;
+use std::path::Path;
+use std::sync::Arc;
 pub use tokio_rustls::client::TlsStream as ClientTlsStream;
 pub use tokio_rustls::server::TlsStream as ServerTlsStream;
 pub use tokio_rustls::{Accept, Connect, TlsAcceptor, TlsConnector, TlsStream};
 
 // This allows to skip certificate verification. Be highly cautious.
 pub use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
+/// Returns the `rustls` crypto provider.
+///
+/// # Panics
+///
+/// If the CryptoProvider has not been installed yet.
+pub fn crypto_provider() -> &'static Arc<CryptoProvider> {
+    // the crypto provider is already installed at this point
+    CryptoProvider::get_default().unwrap()
+}
 
 /// Load the given file from disk as a buffered reader and use the pingora Error
 /// type instead of the std::io version
