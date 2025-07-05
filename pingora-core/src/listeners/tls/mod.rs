@@ -23,3 +23,9 @@ mod s2n;
 
 #[cfg(feature = "s2n")]
 pub use s2n::*;
+
+#[cfg(feature = "rustls")]
+pub mod dynamic_cert_resolver;
+
+#[cfg(feature = "rustls")]
+pub use dynamic_cert_resolver::*;

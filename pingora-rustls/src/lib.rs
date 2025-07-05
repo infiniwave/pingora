@@ -20,11 +20,17 @@
 use log::warn;
 pub use no_debug::{Ellipses, NoDebug, WithTypeInfo};
 use pingora_error::{Error, ErrorType, OrErr, Result};
+<<<<<<< HEAD
 
 pub use rustls::{
     client::WebPkiServerVerifier, version, CertificateError, ClientConfig, DigitallySignedStruct,
     Error as RusTlsError, RootCertStore, ServerConfig, SignatureScheme, Stream,
 };
+=======
+use rustls::crypto::CryptoProvider;
+pub use rustls::server::{ResolvesServerCert, ResolvesServerCertUsingSni, ClientHello};
+pub use rustls::{sign::CertifiedKey, version, ClientConfig, RootCertStore, ServerConfig, Stream};
+>>>>>>> d0d9e69 (add on demand certs)
 pub use rustls_native_certs::load_native_certs;
 use rustls_pemfile::Item;
 pub use rustls_pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime};
