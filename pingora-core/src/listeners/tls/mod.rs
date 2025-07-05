@@ -17,3 +17,9 @@ mod rustls;
 
 #[cfg(feature = "rustls")]
 pub use rustls::*;
+
+#[cfg(feature = "rustls")]
+pub mod dynamic_cert_resolver;
+
+#[cfg(feature = "rustls")]
+pub use dynamic_cert_resolver::*;
