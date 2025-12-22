@@ -23,12 +23,6 @@ mod rustls;
 #[cfg(feature = "rustls")]
 pub use rustls::*;
 
-#[cfg(feature = "s2n")]
-mod s2n;
-
-#[cfg(feature = "s2n")]
-pub use s2n::*;
-
 #[cfg(not(feature = "any_tls"))]
 pub mod noop_tls;
 
@@ -163,15 +157,6 @@ impl ALPN {
             ALPN::H2 => vec![b"h2".to_vec()],
             ALPN::H2H1 => vec![b"h2".to_vec(), b"http/1.1".to_vec()],
             ALPN::Custom(custom) => vec![custom.protocol().to_vec()],
-        }
-    }
-
-    #[cfg(feature = "s2n")]
-    pub(crate) fn to_wire_protocols(&self) -> Vec<Vec<u8>> {
-        match self {
-            ALPN::H1 => vec![b"http/1.1".to_vec()],
-            ALPN::H2 => vec![b"h2".to_vec()],
-            ALPN::H2H1 => vec![b"h2".to_vec(), b"http/1.1".to_vec()],
         }
     }
 }

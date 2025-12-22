@@ -57,7 +57,6 @@ hyperlocal = "0.8"
 [features]
 default = []
 rustls = ["pingora-core/rustls", "pingora-cache/rustls", "any_tls"]
-s2n = ["pingora-core/s2n", "pingora-cache/s2n", "any_tls"]
 any_tls = []
 sentry = ["pingora-core/sentry"]
 connection_filter = ["pingora-core/connection_filter"]

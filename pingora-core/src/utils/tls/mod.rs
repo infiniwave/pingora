@@ -17,9 +17,3 @@ mod rustls;
 
 #[cfg(feature = "rustls")]
 pub use rustls::*;
-
-#[cfg(feature = "s2n")]
-mod s2n;
-
-#[cfg(feature = "s2n")]
-pub use s2n::*;

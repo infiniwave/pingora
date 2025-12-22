@@ -19,18 +19,17 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::{Duration, SystemTime};
 
-use crate::listeners::tls::Acceptor;
 use crate::protocols::raw_connect::ProxyDigest;
 use crate::protocols::{tls::SslDigest, Peek, TimingDigest, UniqueIDType};
 use crate::protocols::{
     GetProxyDigest, GetSocketDigest, GetTimingDigest, SocketDigest, Ssl, UniqueID, ALPN,
 };
 use crate::utils::tls::get_organization_serial_bytes;
-use pingora_error::ErrorType::{AcceptError, ConnectError, InternalError, TLSHandshakeFailure};
+use pingora_error::ErrorType::{ConnectError, InternalError, TLSHandshakeFailure};
 use pingora_error::{OkOrErr, OrErr, Result};
 use pingora_rustls::TlsStream as RusTlsStream;
-use pingora_rustls::{hash_certificate, NoDebug};
-use pingora_rustls::{Accept, Connect, ServerName, TlsConnector};
+use pingora_rustls::{hash_certificate, NoDebug, ServerTlsStream};
+use pingora_rustls::{Connect, ServerName, TlsConnector};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use x509_parser::nom::AsBytes;
 
@@ -38,7 +37,6 @@ use x509_parser::nom::AsBytes;
 pub struct InnerStream<T> {
     pub(crate) stream: Option<RusTlsStream<T>>,
     connect: NoDebug<Option<Connect<T>>>,
-    accept: NoDebug<Option<Accept<T>>>,
 }
 
 /// The TLS connection
@@ -73,19 +71,25 @@ where
         })
     }
 
-    /// Create a new TLS connection from the given `stream`
+    /// Create a TlsStream from a raw tokio-rustls server TLS stream.
     ///
-    /// Using RustTLS the stream is only returned after the handshake.
-    /// The caller does therefor not need to perform [`Self::accept()`].
-    pub(crate) async fn from_acceptor(acceptor: &Acceptor, stream: T) -> Result<Self> {
-        let tls = InnerStream::from_acceptor(acceptor, stream)
-            .await
-            .explain_err(TLSHandshakeFailure, |e| format!("tls stream error: {e}"))?;
+    /// This is used when the TLS handshake has already been completed
+    /// (e.g., via LazyConfigAcceptor) and we just need to wrap the stream.
+    pub(crate) async fn from_raw(raw_stream: ServerTlsStream<T>) -> Result<Self> {
+        let mut tls = InnerStream {
+            stream: Some(RusTlsStream::Server(raw_stream)),
+            connect: None.into(),
+        };
+
+        let digest = tls.digest();
 
         Ok(TlsStream {
             tls,
-            digest: None,
-            timing: Default::default(),
+            digest,
+            timing: TimingDigest {
+                established_ts: SystemTime::now(),
+                ..Default::default()
+            },
         })
     }
 }
@@ -133,12 +137,6 @@ impl<T> TlsStream<T> {
     pub fn ssl_digest(&self) -> Option<Arc<SslDigest>> {
         self.digest.clone()
     }
-
-    /// Attempts to obtain a mutable reference to the SslDigest.
-    /// This method returns `None` if the SslDigest is currently held by other references.
-    pub(crate) fn ssl_digest_mut(&mut self) -> Option<&mut SslDigest> {
-        Arc::get_mut(self.digest.as_mut()?)
-    }
 }
 
 impl<T> Deref for TlsStream<T> {
@@ -162,14 +160,6 @@ where
     /// Connect to the remote TLS server as a client
     pub(crate) async fn connect(&mut self) -> Result<()> {
         self.tls.connect().await?;
-        self.timing.established_ts = SystemTime::now();
-        self.digest = self.tls.digest();
-        Ok(())
-    }
-
-    /// Finish the TLS handshake from client as a server
-    pub(crate) async fn accept(&mut self) -> Result<()> {
-        self.tls.accept().await?;
         self.timing.established_ts = SystemTime::now();
         self.digest = self.tls.digest();
         Ok(())
@@ -258,18 +248,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> InnerStream<T> {
     ) -> Result<Self> {
         let connect = connector.connect(server.to_owned(), stream);
         Ok(InnerStream {
-            accept: None.into(),
             connect: Some(connect).into(),
-            stream: None,
-        })
-    }
-
-    pub(crate) async fn from_acceptor(acceptor: &Acceptor, stream: T) -> Result<Self> {
-        let accept = acceptor.acceptor.accept(stream);
-
-        Ok(InnerStream {
-            accept: Some(accept).into(),
-            connect: None.into(),
             stream: None,
         })
     }
@@ -288,22 +267,6 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> InnerStream<T> {
             .await
             .or_err(TLSHandshakeFailure, "tls connect error")?;
         self.stream = Some(RusTlsStream::Client(stream));
-        Ok(())
-    }
-
-    /// Finish the TLS handshake from client as a server
-    /// no-op implementation within Rustls, handshake is performed during creation of stream.
-    pub(crate) async fn accept(&mut self) -> Result<()> {
-        let accept = &mut (*self.accept);
-        let accept = accept.take().or_err(
-            AcceptError,
-            "TLS accept not available to perform handshake.",
-        )?;
-
-        let stream = accept
-            .await
-            .explain_err(TLSHandshakeFailure, |e| format!("tls connect error: {e}"))?;
-        self.stream = Some(RusTlsStream::Server(stream));
         Ok(())
     }
 

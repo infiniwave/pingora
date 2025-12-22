@@ -26,7 +26,9 @@ pub use rustls::{
     Error as RusTlsError, RootCertStore, ServerConfig, SignatureScheme, Stream,
 };
 use rustls::crypto::CryptoProvider;
-pub use rustls::server::{ResolvesServerCert, ResolvesServerCertUsingSni, ClientHello};
+pub use rustls::server::{
+    Acceptor as RusTlsServerAcceptor, ClientHello, ResolvesServerCert, ResolvesServerCertUsingSni,
+};
 pub use rustls::sign::CertifiedKey;
 pub use rustls_native_certs::load_native_certs;
 use rustls_pemfile::Item;
@@ -37,7 +39,9 @@ use std::path::Path;
 use std::sync::Arc;
 pub use tokio_rustls::client::TlsStream as ClientTlsStream;
 pub use tokio_rustls::server::TlsStream as ServerTlsStream;
-pub use tokio_rustls::{Accept, Connect, TlsAcceptor, TlsConnector, TlsStream};
+pub use tokio_rustls::{
+    Accept, Connect, LazyConfigAcceptor, StartHandshake, TlsAcceptor, TlsConnector, TlsStream,
+};
 
 // This allows to skip certificate verification. Be highly cautious.
 pub use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};

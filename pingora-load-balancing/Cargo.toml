@@ -37,6 +37,5 @@ derivative.workspace = true
 [features]
 default = []
 rustls = ["pingora-core/rustls", "any_tls"]
-s2n = ["pingora-core/s2n", "any_tls"]
 any_tls = []
 v2 = ["pingora-ketama/v2"]

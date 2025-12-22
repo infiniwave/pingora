@@ -12,29 +12,79 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 
-use crate::listeners::TlsAcceptCallbacks;
-use crate::protocols::tls::{server::handshake, server::handshake_with_callback, TlsStream};
-use crate::protocols::{ALPN, IO};
+use crate::protocols::tls::TlsStream;
+use crate::protocols::IO;
 
 use log::debug;
-use pingora_error::ErrorType::InternalError;
+use pingora_error::ErrorType::{InternalError, TLSHandshakeFailure};
 use pingora_error::{Error, OrErr, Result};
-use pingora_rustls::{crypto_provider, load_certs_and_key_files, CertifiedKey};
-use pingora_rustls::{version, TlsAcceptor as RusTlsAcceptor};
-use pingora_rustls::{ResolvesServerCert, ResolvesServerCertUsingSni, ServerConfig};
+use pingora_rustls::{
+    crypto_provider, load_certs_and_key_files, CertifiedKey, ClientHello, LazyConfigAcceptor,
+    RusTlsServerAcceptor, ServerConfig, StartHandshake,
+};
+use pingora_rustls::{version, ResolvesServerCert, ResolvesServerCertUsingSni};
+
+/// A boxed future that resolves to an `Arc<ServerConfig>`.
+pub type AsyncServerConfigFuture =
+    Pin<Box<dyn Future<Output = Result<Arc<ServerConfig>>> + Send + 'static>>;
+/// A callback type that takes client hello information and returns a future
+/// that resolves to a server configuration.
+///
+/// This allows asynchronous certificate fetching based on the client hello,
+/// enabling dynamic certificate selection based on SNI, ALPN, or other
+/// client hello fields.
+pub type AsyncCertCallback =
+    Arc<dyn Fn(ClientHelloInfo) -> AsyncServerConfigFuture + Send + Sync + 'static>;
+
+/// Information extracted from the TLS ClientHello message.
+///
+/// This struct provides access to relevant fields from the client hello
+/// that can be used to make certificate selection decisions.
+#[derive(Debug, Clone)]
+pub struct ClientHelloInfo {
+    pub sni: Option<String>,
+    pub alpn: Vec<Vec<u8>>,
+    pub signature_schemes: Vec<u16>,
+    pub cipher_suites: Vec<u16>,
+}
+
+impl ClientHelloInfo {
+    pub fn from_client_hello(client_hello: &ClientHello<'_>) -> Self {
+        ClientHelloInfo {
+            sni: client_hello.server_name().map(|s| s.to_string()),
+            alpn: client_hello
+                .alpn()
+                .map(|iter| iter.map(|s| s.to_vec()).collect())
+                .unwrap_or_default(),
+            signature_schemes: client_hello
+                .signature_schemes()
+                .iter()
+                .map(|s| u16::from(*s))
+                .collect(),
+            cipher_suites: client_hello
+                .cipher_suites()
+                .iter()
+                .map(|cs| u16::from(*cs))
+                .collect(),
+        }
+    }
+}
 
 /// The TLS settings of a listening endpoint
 pub struct TlsSettings {
     alpn_protocols: Option<Vec<Vec<u8>>>,
-    cert_and_key: CertAndKey,
+    cert_source: CertSource,
 }
 
-pub enum CertAndKey {
+pub enum CertSource {
     Single { cert_path: String, key_path: String },
     Bundle(Vec<BundleCert>),
     Custom(Arc<dyn ResolvesServerCert>),
+    AsyncCallback(AsyncCertCallback),
 }
 
 pub struct BundleCert {
@@ -44,39 +94,24 @@ pub struct BundleCert {
 }
 
 pub struct Acceptor {
-    pub acceptor: RusTlsAcceptor,
-    callbacks: Option<TlsAcceptCallbacks>,
+    cert_source: CertSource,
+    alpn_protocols: Option<Vec<Vec<u8>>>,
 }
 
 impl TlsSettings {
     /// Create a Rustls acceptor based on the current setting for certificates,
     /// keys, and protocols.
     ///
-    /// _NOTE_ This function will panic if there is an error in loading
-    /// certificate files or constructing the builder
-    ///
-    /// Todo: Return a result instead of panicking XD
+    /// For async certificate callbacks, no upfront certificate loading is performed;
+    /// certificates are fetched dynamically during the TLS handshake.
     pub fn build(self) -> Acceptor {
-        let mut config = match &self.cert_and_key {
-            CertAndKey::Single {
-                cert_path,
-                key_path,
-            } => Self::build_single(cert_path, key_path),
-            CertAndKey::Bundle(bundle) => Self::build_bundled(bundle),
-            CertAndKey::Custom(resolver) => Self::build_custom(resolver.clone()),
-        };
-
-        if let Some(alpn_protocols) = self.alpn_protocols {
-            config.alpn_protocols = alpn_protocols;
-        }
-
         Acceptor {
-            acceptor: RusTlsAcceptor::from(Arc::new(config)),
-            callbacks: None,
+            cert_source: self.cert_source,
+            alpn_protocols: self.alpn_protocols,
         }
     }
 
-    fn build_bundled(bundle: &[BundleCert]) -> ServerConfig {
+    fn build_bundled_config(bundle: &[BundleCert], alpn: Option<&Vec<Vec<u8>>>) -> ServerConfig {
         let crypto_provider = crypto_provider();
 
         let mut resolver = ResolvesServerCertUsingSni::new();
@@ -105,13 +140,23 @@ impl TlsSettings {
             }
         }
 
-        // TODO - Add support for client auth & custom CA support
-        ServerConfig::builder_with_protocol_versions(&[&version::TLS12, &version::TLS13])
-            .with_no_client_auth()
-            .with_cert_resolver(Arc::new(resolver))
+        let mut config =
+            ServerConfig::builder_with_protocol_versions(&[&version::TLS12, &version::TLS13])
+                .with_no_client_auth()
+                .with_cert_resolver(Arc::new(resolver));
+
+        if let Some(alpn_protocols) = alpn {
+            config.alpn_protocols = alpn_protocols.clone();
+        }
+
+        config
     }
 
-    fn build_single(cert_path: &str, key_path: &str) -> ServerConfig {
+    fn build_single_config(
+        cert_path: &str,
+        key_path: &str,
+        alpn: Option<&Vec<Vec<u8>>>,
+    ) -> ServerConfig {
         let Ok(Some((certs, key))) = load_certs_and_key_files(cert_path, key_path) else {
             panic!(
                 "Failed to load provided certificates \"{}\" or key \"{}\".",
@@ -119,29 +164,45 @@ impl TlsSettings {
             )
         };
 
-        ServerConfig::builder_with_protocol_versions(&[&version::TLS12, &version::TLS13])
-            .with_no_client_auth()
-            .with_single_cert(certs, key)
-            .explain_err(InternalError, |e| {
-                format!("Failed to create server listener config: {e}")
-            })
-            .unwrap()
+        let mut config =
+            ServerConfig::builder_with_protocol_versions(&[&version::TLS12, &version::TLS13])
+                .with_no_client_auth()
+                .with_single_cert(certs, key)
+                .explain_err(InternalError, |e| {
+                    format!("Failed to create server listener config: {e}")
+                })
+                .unwrap();
+
+        if let Some(alpn_protocols) = alpn {
+            config.alpn_protocols = alpn_protocols.clone();
+        }
+
+        config
     }
 
-    fn build_custom(resolver: Arc<dyn ResolvesServerCert>) -> ServerConfig {
-        // TODO - Add support for client auth & custom CA support
-        ServerConfig::builder_with_protocol_versions(&[&version::TLS12, &version::TLS13])
-            .with_no_client_auth()
-            .with_cert_resolver(resolver)
+    fn build_custom_config(
+        resolver: Arc<dyn ResolvesServerCert>,
+        alpn: Option<&Vec<Vec<u8>>>,
+    ) -> ServerConfig {
+        let mut config =
+            ServerConfig::builder_with_protocol_versions(&[&version::TLS12, &version::TLS13])
+                .with_no_client_auth()
+                .with_cert_resolver(resolver);
+
+        if let Some(alpn_protocols) = alpn {
+            config.alpn_protocols = alpn_protocols.clone();
+        }
+
+        config
     }
 
     /// Enable HTTP/2 support for this endpoint, which is default off.
     /// This effectively sets the ALPN to prefer HTTP/2 with HTTP/1.1 allowed
     pub fn enable_h2(&mut self) {
-        self.set_alpn(ALPN::H2H1);
+        self.set_alpn(crate::protocols::ALPN::H2H1);
     }
 
-    pub fn set_alpn(&mut self, alpn: ALPN) {
+    pub fn set_alpn(&mut self, alpn: crate::protocols::ALPN) {
         self.alpn_protocols = Some(alpn.to_wire_protocols());
     }
 
@@ -151,7 +212,7 @@ impl TlsSettings {
     {
         Ok(TlsSettings {
             alpn_protocols: None,
-            cert_and_key: CertAndKey::Single {
+            cert_source: CertSource::Single {
                 cert_path: cert_path.to_string(),
                 key_path: key_path.to_string(),
             },
@@ -164,7 +225,7 @@ impl TlsSettings {
     {
         Ok(TlsSettings {
             alpn_protocols: None,
-            cert_and_key: CertAndKey::Bundle(bundle),
+            cert_source: CertSource::Bundle(bundle),
         })
     }
 
@@ -174,7 +235,42 @@ impl TlsSettings {
     {
         Ok(TlsSettings {
             alpn_protocols: None,
-            cert_and_key: CertAndKey::Custom(resolver),
+            cert_source: CertSource::Custom(resolver),
+        })
+    }
+
+    /// Create TLS settings with an async callback for fetching certificates.
+    ///
+    /// The callback receives a `ClientHelloInfo` containing information from
+    /// the TLS ClientHello message and should return a future that resolves
+    /// to an `Arc<ServerConfig>`.
+    ///
+    /// This enables asynchronous certificate fetching, useful for scenarios
+    /// where certificates need to be loaded from external sources (databases,
+    /// remote services, etc.) based on the SNI or other client hello fields.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use std::sync::Arc;
+    /// use pingora_core::listeners::tls::TlsSettings;
+    ///
+    /// let settings = TlsSettings::with_async_callback(Arc::new(|client_hello| {
+    ///     Box::pin(async move {
+    ///         // Fetch certificate based on SNI
+    ///         let sni = client_hello.sni.as_deref().unwrap_or("default");
+    ///         let config = load_config_for_sni(sni).await?;
+    ///         Ok(Arc::new(config))
+    ///     })
+    /// }));
+    /// ```
+    pub fn with_async_callback(callback: AsyncCertCallback) -> Result<Self>
+    where
+        Self: Sized,
+    {
+        Ok(TlsSettings {
+            alpn_protocols: None,
+            cert_source: CertSource::AsyncCallback(callback),
         })
     }
 
@@ -182,10 +278,9 @@ impl TlsSettings {
     where
         Self: Sized,
     {
-        // TODO: verify if/how callback in handshake can be done using Rustls
         Error::e_explain(
             InternalError,
-            "Certificate callbacks are not supported with feature \"rustls\".",
+            "Legacy certificate callbacks are not supported. Use with_async_callback instead.",
         )
     }
 }
@@ -193,11 +288,42 @@ impl TlsSettings {
 impl Acceptor {
     pub async fn tls_handshake<S: IO>(&self, stream: S) -> Result<TlsStream<S>> {
         debug!("new tls session");
-        // TODO: be able to offload this handshake in a thread pool
-        if let Some(cb) = self.callbacks.as_ref() {
-            handshake_with_callback(self, stream, cb).await
-        } else {
-            handshake(self, stream).await
-        }
+
+        let lazy_acceptor = LazyConfigAcceptor::new(RusTlsServerAcceptor::default(), stream);
+
+        let start_handshake: StartHandshake<S> = lazy_acceptor
+            .await
+            .map_err(|e| Error::explain(TLSHandshakeFailure, format!("TLS accept error: {e}")))?;
+
+        let client_hello = start_handshake.client_hello();
+        let config = match &self.cert_source {
+            CertSource::Single {
+                cert_path,
+                key_path,
+            } => Arc::new(TlsSettings::build_single_config(
+                cert_path,
+                key_path,
+                self.alpn_protocols.as_ref(),
+            )),
+            CertSource::Bundle(bundle) => Arc::new(TlsSettings::build_bundled_config(
+                bundle,
+                self.alpn_protocols.as_ref(),
+            )),
+            CertSource::Custom(resolver) => Arc::new(TlsSettings::build_custom_config(
+                resolver.clone(),
+                self.alpn_protocols.as_ref(),
+            )),
+            CertSource::AsyncCallback(callback) => {
+                let client_hello_info = ClientHelloInfo::from_client_hello(&client_hello);
+                callback(client_hello_info).await?
+            }
+        };
+
+        let tls_stream = start_handshake
+            .into_stream(config)
+            .await
+            .map_err(|e| Error::explain(TLSHandshakeFailure, format!("TLS handshake error: {e}")))?;
+
+        TlsStream::from_raw(tls_stream).await
     }
 }

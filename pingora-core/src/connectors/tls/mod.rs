@@ -12,12 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#[cfg(feature = "s2n")]
-mod s2n;
-
-#[cfg(feature = "s2n")]
-pub use s2n::*;
-
 #[cfg(feature = "rustls")]
 mod rustls;
 

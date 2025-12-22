@@ -69,4 +69,3 @@ harness = false
 [features]
 default = []
 rustls = ["pingora-core/rustls"]
-s2n = ["pingora-core/s2n"]

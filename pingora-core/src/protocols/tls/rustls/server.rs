@@ -14,84 +14,11 @@
 
 //! Rustls TLS server specific implementation
 
-use crate::listeners::TlsAcceptCallbacks;
 use crate::protocols::tls::rustls::TlsStream;
-use crate::protocols::tls::TlsRef;
-use crate::protocols::IO;
-use crate::{listeners::tls::Acceptor, protocols::Shutdown};
+use crate::protocols::Shutdown;
 use async_trait::async_trait;
 use log::warn;
-use pingora_error::{ErrorType::*, OrErr, Result};
-use std::pin::Pin;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
-
-impl<S: AsyncRead + AsyncWrite + Send + Unpin> TlsStream<S> {
-    async fn start_accept(mut self: Pin<&mut Self>) -> Result<bool> {
-        // TODO: suspend cert callback
-        let res = self.accept().await;
-
-        match res {
-            Ok(()) => Ok(true),
-            Err(e) => {
-                if e.etype == TLSWantX509Lookup {
-                    Ok(false)
-                } else {
-                    Err(e)
-                }
-            }
-        }
-    }
-
-    async fn resume_accept(mut self: Pin<&mut Self>) -> Result<()> {
-        // TODO: unblock cert callback
-        self.accept().await
-    }
-}
-
-async fn prepare_tls_stream<S: IO>(acceptor: &Acceptor, io: S) -> Result<TlsStream<S>> {
-    TlsStream::from_acceptor(acceptor, io)
-        .await
-        .explain_err(TLSHandshakeFailure, |e| format!("tls stream error: {e}"))
-}
-
-/// Perform TLS handshake for the given connection with the given configuration
-pub async fn handshake<S: IO>(acceptor: &Acceptor, io: S) -> Result<TlsStream<S>> {
-    let mut stream = prepare_tls_stream(acceptor, io).await?;
-    stream
-        .accept()
-        .await
-        .explain_err(TLSHandshakeFailure, |e| format!("TLS accept() failed: {e}"))?;
-    Ok(stream)
-}
-
-/// Perform TLS handshake for the given connection with the given configuration and callbacks
-/// callbacks are currently not supported within pingora Rustls and are ignored
-pub async fn handshake_with_callback<S: IO>(
-    acceptor: &Acceptor,
-    io: S,
-    callbacks: &TlsAcceptCallbacks,
-) -> Result<TlsStream<S>> {
-    let mut tls_stream = prepare_tls_stream(acceptor, io).await?;
-    let done = Pin::new(&mut tls_stream).start_accept().await?;
-    if !done {
-        // TODO: verify if/how callback in handshake can be done using Rustls
-        warn!("Callacks are not supported with feature \"rustls\".");
-
-        Pin::new(&mut tls_stream)
-            .resume_accept()
-            .await
-            .explain_err(TLSHandshakeFailure, |e| format!("TLS accept() failed: {e}"))?;
-    }
-    {
-        let tls_ref = TlsRef;
-        if let Some(extension) = callbacks.handshake_complete_callback(&tls_ref).await {
-            if let Some(digest_mut) = tls_stream.ssl_digest_mut() {
-                digest_mut.extension.set(extension);
-            }
-        }
-    }
-    Ok(tls_stream)
-}
 
 #[async_trait]
 impl<S> Shutdown for TlsStream<S>
@@ -106,10 +33,4 @@ where
             }
         }
     }
-}
-
-#[ignore]
-#[tokio::test]
-async fn test_async_cert() {
-    todo!("callback support and test for Rustls")
 }
