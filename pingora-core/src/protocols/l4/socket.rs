@@ -14,6 +14,7 @@
 
 //! Generic socket type
 
+use crate::connectors::L4Connect;
 use crate::{Error, OrErr};
 use log::warn;
 #[cfg(unix)]
@@ -23,16 +24,21 @@ use std::hash::{Hash, Hasher};
 use std::net::SocketAddr as StdSockAddr;
 #[cfg(unix)]
 use std::os::unix::net::SocketAddr as StdUnixSockAddr;
+use std::sync::Arc;
 #[cfg(unix)]
 use tokio::net::unix::SocketAddr as TokioUnixSockAddr;
 
 /// [`SocketAddr`] is a storage type that contains either an Internet (IP address)
-/// socket address or a Unix domain socket address.
-#[derive(Debug, Clone)]
+/// socket address, a Unix domain socket address, or a custom async stream handler.
+#[derive(Clone)]
 pub enum SocketAddr {
     Inet(StdSockAddr),
     #[cfg(unix)]
     Unix(StdUnixSockAddr),
+    /// A custom stream handler that produces TCP-like packets.
+    /// The `String` is a unique identifier/name for this custom handler.
+    /// The `Arc<dyn L4Connect + Send + Sync>` is the handler that establishes connections.
+    Custom(String, Arc<dyn L4Connect + Send + Sync>),
 }
 
 impl SocketAddr {
@@ -53,6 +59,21 @@ impl SocketAddr {
         } else {
             None
         }
+    }
+
+    /// Get a reference to the custom stream handler if it is one.
+    /// Returns `Some((name, connector))` if this is a custom handler.
+    pub fn as_custom(&self) -> Option<(&str, &Arc<dyn L4Connect + Send + Sync>)> {
+        if let SocketAddr::Custom(name, connector) = self {
+            Some((name, connector))
+        } else {
+            None
+        }
+    }
+
+    /// Create a new custom socket address with the given name and connector.
+    pub fn new_custom<S: Into<String>>(name: S, connector: Arc<dyn L4Connect + Send + Sync>) -> Self {
+        SocketAddr::Custom(name.into(), connector)
     }
 
     /// Set the port if the address is an IP socket.
@@ -114,6 +135,17 @@ impl SocketAddr {
     }
 }
 
+impl std::fmt::Debug for SocketAddr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SocketAddr::Inet(addr) => f.debug_tuple("Inet").field(addr).finish(),
+            #[cfg(unix)]
+            SocketAddr::Unix(addr) => f.debug_tuple("Unix").field(addr).finish(),
+            SocketAddr::Custom(name, _) => f.debug_tuple("Custom").field(name).finish(),
+        }
+    }
+}
+
 impl std::fmt::Display for SocketAddr {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
@@ -126,12 +158,14 @@ impl std::fmt::Display for SocketAddr {
                     write!(f, "{addr:?}")
                 }
             }
+            SocketAddr::Custom(name, _) => write!(f, "custom:{name}"),
         }
     }
 }
 
 impl Hash for SocketAddr {
     fn hash<H: Hasher>(&self, state: &mut H) {
+        std::mem::discriminant(self).hash(state);
         match self {
             Self::Inet(sockaddr) => sockaddr.hash(state),
             #[cfg(unix)]
@@ -146,6 +180,9 @@ impl Hash for SocketAddr {
                     panic!("Unnamed and abstract UDS types not yet supported for hashing")
                 }
             }
+            Self::Custom(name, _) => {
+                name.hash(state);
+            }
         }
     }
 }
@@ -159,6 +196,9 @@ impl PartialEq for SocketAddr {
                 let path = addr.as_pathname();
                 // can only compare UDS with path, assume false on all unnamed UDS
                 path.is_some() && path == other.as_unix().and_then(|addr| addr.as_pathname())
+            }
+            Self::Custom(name, _) => {
+                other.as_custom().map(|(n, _)| n) == Some(name.as_str())
             }
         }
     }
@@ -177,7 +217,6 @@ impl Ord for SocketAddr {
                 if let Some(o) = other.as_inet() {
                     addr.cmp(o)
                 } else {
-                    // always make Inet < Unix "smallest for variants at the top"
                     Ordering::Less
                 }
             }
@@ -186,8 +225,16 @@ impl Ord for SocketAddr {
                 if let Some(o) = other.as_unix() {
                     // NOTE: unnamed UDS are consider the same
                     addr.as_pathname().cmp(&o.as_pathname())
+                } else if other.as_inet().is_some() {
+                    Ordering::Greater
                 } else {
-                    // always make Inet < Unix "smallest for variants at the top"
+                    Ordering::Less
+                }
+            }
+            Self::Custom(name, _) => {
+                if let Some((other_name, _)) = other.as_custom() {
+                    name.as_str().cmp(other_name)
+                } else {
                     Ordering::Greater
                 }
             }
@@ -233,10 +280,14 @@ impl std::str::FromStr for SocketAddr {
 impl std::net::ToSocketAddrs for SocketAddr {
     type Iter = std::iter::Once<StdSockAddr>;
 
-    // Error if UDS addr
+    // Error if UDS addr or Custom
     fn to_socket_addrs(&self) -> std::io::Result<Self::Iter> {
         if let Some(inet) = self.as_inet() {
             Ok(std::iter::once(*inet))
+        } else if self.as_custom().is_some() {
+            Err(std::io::Error::other(
+                "Custom socket cannot be used as inet socket",
+            ))
         } else {
             Err(std::io::Error::other(
                 "UDS socket cannot be used as inet socket",

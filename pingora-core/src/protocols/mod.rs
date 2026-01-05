@@ -299,6 +299,9 @@ impl ConnFdReusable for SocketAddr {
                 .as_pathname()
                 .expect("non-pathname unix sockets not supported as peer")
                 .check_fd_match(fd),
+            // Custom sockets don't have a file descriptor to check
+            // Always return false as they manage their own connections
+            SocketAddr::Custom(_, _) => false,
         }
     }
 }
@@ -308,6 +311,9 @@ impl ConnSockReusable for SocketAddr {
     fn check_sock_match<V: AsRawSocket>(&self, sock: V) -> bool {
         match self {
             SocketAddr::Inet(addr) => addr.check_sock_match(sock),
+            // Custom sockets don't have a socket to check
+            // Always return false as they manage their own connections
+            SocketAddr::Custom(_, _) => false,
         }
     }
 }

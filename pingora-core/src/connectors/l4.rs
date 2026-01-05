@@ -182,6 +182,32 @@ where
                         }
                     }
                 }
+                SocketAddr::Custom(name, connector) => {
+                    // Use the custom connector to establish the connection.
+                    // Pass the address itself so the connector can potentially use nested addressing.
+                    let connect_future = connector.connect(peer_addr);
+                    let conn_res = match peer.connection_timeout() {
+                        Some(t) => pingora_timeout::timeout(t, connect_future)
+                            .await
+                            .explain_err(ConnectTimedout, |_| {
+                                format!("timeout {t:?} connecting to custom handler {name}")
+                            })?,
+                        None => connect_future.await,
+                    };
+                    match conn_res {
+                        Ok(stream) => {
+                            debug!("connected via custom handler: {}", name);
+                            Ok(stream)
+                        }
+                        Err(e) => {
+                            let c = format!("Fail to connect via custom handler {name}");
+                            match e.etype() {
+                                SocketError | BindError => Error::e_because(InternalError, c, e),
+                                _ => Err(e.more_context(c)),
+                            }
+                        }
+                    }
+                }
             }?
         };
 
@@ -240,6 +266,8 @@ pub(crate) fn bind_to_random<P: Peer>(
         },
         #[cfg(unix)]
         SocketAddr::Unix(_) => None,
+        // Custom handlers manage their own connections, no bind address needed
+        SocketAddr::Custom(_, _) => None,
     };
 
     if addr.is_some() {
