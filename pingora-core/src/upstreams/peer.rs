@@ -483,7 +483,7 @@ impl HttpPeer {
         }
     }
 
-    fn new_from_sockaddr(address: SocketAddr, tls: bool, sni: String) -> Self {
+    pub fn new_from_sockaddr(address: SocketAddr, tls: bool, sni: String) -> Self {
         HttpPeer {
             _address: address,
             scheme: Scheme::from_tls_bool(tls),
