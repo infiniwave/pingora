@@ -37,6 +37,7 @@ pub use s2n::*;
 
 #[cfg(not(feature = "any_tls"))]
 pub mod noop_tls;
+pub mod quic;
 
 #[cfg(not(feature = "any_tls"))]
 pub use noop_tls::*;
@@ -56,6 +57,8 @@ pub enum ALPN {
     H2,
     /// Prefer HTTP/2 over HTTP/1.1
     H2H1,
+    /// Prefer HTTP/3 only
+    H3,
     /// Custom Protocol is stored in wire format (length-prefixed)
     /// Wire format is precomputed at creation to avoid dangling references
     Custom(CustomALPN),
@@ -112,6 +115,7 @@ impl std::fmt::Display for ALPN {
             ALPN::H1 => write!(f, "H1"),
             ALPN::H2 => write!(f, "H2"),
             ALPN::H2H1 => write!(f, "H2H1"),
+            ALPN::H3 => write!(f, "H3"),
             ALPN::Custom(custom) => {
                 // extract protocol name, print as UTF-8 if possible, else judt itd raw bytes
                 match std::str::from_utf8(custom.protocol()) {
@@ -130,6 +134,8 @@ impl ALPN {
             ALPN::H1
         } else if min == 2 {
             ALPN::H2
+        } else if min == 3 {
+            ALPN::H3
         } else {
             ALPN::H2H1
         }
@@ -140,6 +146,7 @@ impl ALPN {
         match self {
             ALPN::H1 => 1,
             ALPN::H2 | ALPN::H2H1 => 2,
+            ALPN::H3 => 3,
             ALPN::Custom(_) => 0,
         }
     }
@@ -149,6 +156,7 @@ impl ALPN {
         match self {
             ALPN::H1 | ALPN::H2H1 => 1,
             ALPN::H2 => 2,
+            ALPN::H3 => 3,
             ALPN::Custom(_) => 0,
         }
     }
@@ -161,6 +169,7 @@ impl ALPN {
             Self::H1 => b"\x08http/1.1",
             Self::H2 => b"\x02h2",
             Self::H2H1 => b"\x02h2\x08http/1.1",
+            Self::H3 => b"\x02h3",
             Self::Custom(custom) => custom.as_wire(),
         }
     }
@@ -170,6 +179,7 @@ impl ALPN {
         match raw {
             b"http/1.1" => Some(Self::H1),
             b"h2" => Some(Self::H2),
+            b"h3" => Some(Self::H3),
             _ => Some(Self::Custom(CustomALPN::new(raw.to_vec()))),
         }
     }
@@ -180,6 +190,7 @@ impl ALPN {
             ALPN::H1 => vec![b"http/1.1".to_vec()],
             ALPN::H2 => vec![b"h2".to_vec()],
             ALPN::H2H1 => vec![b"h2".to_vec(), b"http/1.1".to_vec()],
+            ALPN::H3 => vec![b"h3".to_vec()],
             ALPN::Custom(custom) => vec![custom.protocol().to_vec()],
         }
     }
@@ -190,6 +201,8 @@ impl ALPN {
             ALPN::H1 => vec![b"http/1.1".to_vec()],
             ALPN::H2 => vec![b"h2".to_vec()],
             ALPN::H2H1 => vec![b"h2".to_vec(), b"http/1.1".to_vec()],
+            ALPN::H3 => vec![b"h3".to_vec()],
+            ALPN::Custom(custom) => vec![custom.protocol().to_vec()],
         }
     }
 }

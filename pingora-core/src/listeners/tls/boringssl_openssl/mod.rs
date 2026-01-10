@@ -114,6 +114,7 @@ impl TlsSettings {
                 .set_alpn_select_callback(alpn::prefer_h2),
             ALPN::H1 => self.accept_builder.set_alpn_select_callback(alpn::h1_only),
             ALPN::H2 => self.accept_builder.set_alpn_select_callback(alpn::h2_only),
+            ALPN::H3 => { /* noop */ }
             ALPN::Custom(custom) => {
                 self.accept_builder
                     .set_alpn_select_callback(move |_, alpn_in| {

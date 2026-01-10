@@ -37,6 +37,7 @@ use pingora_core::modules::http::compression::ResponseCompression;
 use pingora_core::protocols::{
     http::error_resp::gen_error_response, l4::socket::SocketAddr, Digest,
 };
+use pingora_core::protocols::http::HttpVersion;
 use pingora_core::server::configuration::Opt;
 use pingora_core::services::Service;
 use pingora_core::upstreams::peer::HttpPeer;
@@ -737,7 +738,7 @@ fn test_main() {
 
     let http_logic = proxy_service_h2c.app_logic_mut().unwrap();
     let mut http_server_options = HttpServerOptions::default();
-    http_server_options.h2c = true;
+    http_server_options.http_version = HttpVersion::V2;
     http_logic.server_options = Some(http_server_options);
     proxy_service_h2c.add_tcp("0.0.0.0:6146");
 

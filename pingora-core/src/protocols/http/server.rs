@@ -15,10 +15,11 @@
 //! HTTP server session APIs
 
 use super::custom::server::Session as SessionCustom;
-use super::error_resp;
+use super::{error_resp, HttpVersion};
 use super::subrequest::server::HttpSession as SessionSubrequest;
 use super::v1::server::HttpSession as SessionV1;
 use super::v2::server::HttpSession as SessionV2;
+use super::v3::server::Http3Session as SessionV3;
 use super::HttpTask;
 use crate::custom_session;
 use crate::protocols::{Digest, SocketAddr, Stream};
@@ -33,6 +34,7 @@ use std::time::Duration;
 pub enum Session {
     H1(SessionV1),
     H2(SessionV2),
+    H3(SessionV3),
     Subrequest(SessionSubrequest),
     Custom(Box<dyn SessionCustom>),
 }
@@ -46,6 +48,11 @@ impl Session {
     /// Create a new [`Session`] from an established HTTP/2 stream
     pub fn new_http2(session: SessionV2) -> Self {
         Self::H2(session)
+    }
+    
+    /// Create a new [`Session`] from an established HTTP/3 stream
+    pub fn new_http3(session: SessionV3) -> Self {
+        Self::H3(session)
     }
 
     /// Create a new [`Session`] from a subrequest session
@@ -72,6 +79,20 @@ impl Session {
     pub fn is_custom(&self) -> bool {
         matches!(self, Self::Custom(_))
     }
+    
+    /// Whether the session is HTTP/3.
+    pub fn is_http3(&self) -> bool {
+        matches!(self, Session::H3(_))
+    }
+
+    /// The session HTTP version.
+    pub fn http_version(&self) -> HttpVersion {
+        match self {
+            Session::H1(_) => HttpVersion::V1,
+            Session::H2(_) => HttpVersion::V2,
+            Session::H3(_) => HttpVersion::V3,
+        }
+    }
 
     /// Read the request header. This method is required to be called first before doing anything
     /// else with the session.
@@ -86,6 +107,7 @@ impl Session {
             }
             // This call will always return `Ok(true)` for Http2 because the request is already read
             Self::H2(_) => Ok(true),
+            Self::H3(_) => Ok(true),
             Self::Subrequest(s) => {
                 let read = s.read_request().await?;
                 Ok(read.is_some())
@@ -101,6 +123,7 @@ impl Session {
         match self {
             Self::H1(s) => s.req_header(),
             Self::H2(s) => s.req_header(),
+            Self::H3(s) => s.req_header(),
             Self::Subrequest(s) => s.req_header(),
             Self::Custom(s) => s.req_header(),
         }
@@ -113,6 +136,7 @@ impl Session {
         match self {
             Self::H1(s) => s.req_header_mut(),
             Self::H2(s) => s.req_header_mut(),
+            Self::H3(s) => s.req_header_mut(),
             Self::Subrequest(s) => s.req_header_mut(),
             Self::Custom(s) => s.req_header_mut(),
         }
@@ -137,6 +161,7 @@ impl Session {
         match self {
             Self::H1(s) => s.read_body_bytes().await,
             Self::H2(s) => s.read_body_bytes().await,
+            Self::H3(s) => s.read_body_bytes().await,
             Self::Subrequest(s) => s.read_body_bytes().await,
             Self::Custom(s) => s.read_body_bytes().await,
         }
@@ -150,6 +175,7 @@ impl Session {
         match self {
             Self::H1(s) => s.drain_request_body().await,
             Self::H2(s) => s.drain_request_body().await,
+            Self::H3(s) => s.drain_request_body().await,
             Self::Subrequest(s) => s.drain_request_body().await,
             Self::Custom(s) => s.drain_request_body().await,
         }
@@ -165,6 +191,7 @@ impl Session {
                 Ok(())
             }
             Self::H2(s) => s.write_response_header(resp, false),
+            Self::H3(s) => s.write_response_header(resp, false).await,
             Self::Subrequest(s) => {
                 s.write_response_header(resp).await?;
                 Ok(())
@@ -181,6 +208,7 @@ impl Session {
                 Ok(())
             }
             Self::H2(s) => s.write_response_header_ref(resp, false),
+            Self::H3(s) => s.write_response_header_ref(resp, false).await,
             Self::Subrequest(s) => {
                 s.write_response_header_ref(resp).await?;
                 Ok(())
@@ -208,6 +236,7 @@ impl Session {
                 Ok(())
             }
             Self::H2(s) => s.write_body(data, end).await,
+            Self::H3(s) => s.write_body(data, end).await,
             Self::Subrequest(s) => {
                 s.write_body(data).await?;
                 Ok(())
@@ -221,6 +250,7 @@ impl Session {
         match self {
             Self::H1(_) => Ok(()), // TODO: support trailers for h1
             Self::H2(s) => s.write_trailers(trailers),
+            Self::H3(s) => s.write_trailers(trailers).await,
             Self::Subrequest(s) => s.write_trailers(Some(Box::new(trailers))).await,
             Self::Custom(s) => s.write_trailers(trailers).await,
         }
@@ -229,6 +259,7 @@ impl Session {
     /// Finish the life of this request.
     /// For H1, if connection reuse is supported, a Some(Stream) will be returned, otherwise None.
     /// For H2, always return None because H2 stream is not reusable.
+    /// for H3, this will send a FIN_STREAM frame on the underlying QUIC stream
     /// For subrequests, there is no true underlying stream to return.
     pub async fn finish(self) -> Result<Option<Stream>> {
         match self {
@@ -239,6 +270,10 @@ impl Session {
             }
             Self::H2(mut s) => {
                 s.finish()?;
+                Ok(None)
+            }
+            Self::H3(mut s) => {
+                s.finish().await?;
                 Ok(None)
             }
             Self::Subrequest(mut s) => {
@@ -256,28 +291,31 @@ impl Session {
         match self {
             Self::H1(s) => s.response_duplex_vec(tasks).await,
             Self::H2(s) => s.response_duplex_vec(tasks).await,
+            Self::H3(s) => s.response_duplex_vec(tasks).await,
             Self::Subrequest(s) => s.response_duplex_vec(tasks).await,
             Self::Custom(s) => s.response_duplex_vec(tasks).await,
         }
     }
 
     /// Set connection reuse. `duration` defines how long the connection is kept open for the next
-    /// request to reuse. Noop for h2 and subrequest
+    /// request to reuse. Noop for h2/h3 and subrequest
     pub fn set_keepalive(&mut self, duration: Option<u64>) {
         match self {
             Self::H1(s) => s.set_server_keepalive(duration),
             Self::H2(_) => {}
+            Self::H3(_) => {}
             Self::Subrequest(_) => {}
             Self::Custom(_) => {}
         }
     }
 
-    /// Get the keepalive timeout. None if keepalive is disabled. Not applicable for h2 or
+    /// Get the keepalive timeout. None if keepalive is disabled. Not applicable for h2/h3 or
     /// subrequest
     pub fn get_keepalive(&self) -> Option<u64> {
         match self {
             Self::H1(s) => s.get_keepalive_timeout(),
             Self::H2(_) => None,
+            Self::H3(_) => None,
             Self::Subrequest(_) => None,
             Self::Custom(_) => None,
         }
@@ -291,6 +329,7 @@ impl Session {
         match self {
             Self::H1(s) => s.set_read_timeout(timeout),
             Self::H2(_) => {}
+            Self::H3(_) => {}
             Self::Subrequest(s) => s.set_read_timeout(timeout),
             Self::Custom(c) => c.set_read_timeout(timeout),
         }
@@ -301,6 +340,7 @@ impl Session {
         match self {
             Self::H1(s) => s.get_read_timeout(),
             Self::H2(_) => None,
+            Self::H3(_) => None,
             Self::Subrequest(s) => s.get_read_timeout(),
             Self::Custom(s) => s.get_read_timeout(),
         }
@@ -313,6 +353,7 @@ impl Session {
         match self {
             Self::H1(s) => s.set_write_timeout(timeout),
             Self::H2(s) => s.set_write_timeout(timeout),
+            Self::H3(s) => s.set_write_timeout(timeout),
             Self::Subrequest(s) => s.set_write_timeout(timeout),
             Self::Custom(c) => c.set_write_timeout(timeout),
         }
@@ -323,6 +364,7 @@ impl Session {
         match self {
             Self::H1(s) => s.get_write_timeout(),
             Self::H2(s) => s.get_write_timeout(),
+            Self::H3(s) => s.get_write_timeout(),
             Self::Subrequest(s) => s.get_write_timeout(),
             Self::Custom(s) => s.get_write_timeout(),
         }
@@ -338,6 +380,7 @@ impl Session {
         match self {
             Self::H1(s) => s.set_total_drain_timeout(timeout),
             Self::H2(s) => s.set_total_drain_timeout(timeout),
+            Self::H3(s) => s.set_total_drain_timeout(timeout),
             Self::Subrequest(s) => s.set_total_drain_timeout(timeout),
             Self::Custom(c) => c.set_total_drain_timeout(timeout),
         }
@@ -348,6 +391,7 @@ impl Session {
         match self {
             Self::H1(s) => s.get_total_drain_timeout(),
             Self::H2(s) => s.get_total_drain_timeout(),
+            Self::H3(s) => s.get_total_drain_timeout(),
             Self::Subrequest(s) => s.get_total_drain_timeout(),
             Self::Custom(s) => s.get_total_drain_timeout(),
         }
@@ -362,11 +406,12 @@ impl Session {
     /// Calculated write timeout is guaranteed to be at least 1s if `min_send_rate`
     /// is greater than zero, a send rate of zero is equivalent to disabling.
     ///
-    /// This is a noop for h2.
+    /// This is a noop for h2/h3.
     pub fn set_min_send_rate(&mut self, rate: Option<usize>) {
         match self {
             Self::H1(s) => s.set_min_send_rate(rate),
             Self::H2(_) => {}
+            Self::H3(_) => {}
             Self::Subrequest(_) => {}
             Self::Custom(_) => {}
         }
@@ -384,6 +429,7 @@ impl Session {
         match self {
             Self::H1(s) => s.set_ignore_info_resp(ignore),
             Self::H2(_) => {} // always ignored
+            Self::H3(_) => {} // always ignored
             Self::Subrequest(_) => {}
             Self::Custom(_) => {} // always ignored
         }
@@ -397,6 +443,7 @@ impl Session {
         match self {
             Self::H1(s) => s.set_close_on_response_before_downstream_finish(close),
             Self::H2(_) => {}         // always ignored
+            Self::H3(_) => {}         // always ignored
             Self::Subrequest(_) => {} // always ignored
             Self::Custom(_) => {}     // always ignored
         }
@@ -408,6 +455,7 @@ impl Session {
         match self {
             Self::H1(s) => s.request_summary(),
             Self::H2(s) => s.request_summary(),
+            Self::H3(s) => s.request_summary(),
             Self::Subrequest(s) => s.request_summary(),
             Self::Custom(s) => s.request_summary(),
         }
@@ -419,6 +467,7 @@ impl Session {
         match self {
             Self::H1(s) => s.response_written(),
             Self::H2(s) => s.response_written(),
+            Self::H3(s) => s.response_written(),
             Self::Subrequest(s) => s.response_written(),
             Self::Custom(s) => s.response_written(),
         }
@@ -426,12 +475,15 @@ impl Session {
 
     /// Give up the http session abruptly.
     /// For H1 this will close the underlying connection
-    /// For H2 this will send RESET frame to end this stream without impacting the connection
+    /// For H2 this will send a RESET frame to end this stream
+    /// For H3 this will send a STOP_SENDING & RESET_STREAM QUIC frame on the underlying stream
+    /// For H2 & H3 a call has no impact on the connection
     /// For subrequests, this will drop task senders and receivers.
     pub async fn shutdown(&mut self) {
         match self {
             Self::H1(s) => s.shutdown().await,
             Self::H2(s) => s.shutdown(),
+            Self::H3(s) => s.shutdown(),
             Self::Subrequest(s) => s.shutdown(),
             Self::Custom(s) => s.shutdown(1, "shutdown").await,
         }
@@ -441,6 +493,7 @@ impl Session {
         match self {
             Self::H1(s) => s.get_headers_raw_bytes(),
             Self::H2(s) => s.pseudo_raw_h1_request_header(),
+            Self::H3(s) => s.pseudo_raw_h1_request_header(),
             Self::Subrequest(s) => s.get_headers_raw_bytes(),
             Self::Custom(c) => c.pseudo_raw_h1_request_header(),
         }
@@ -451,6 +504,7 @@ impl Session {
         match self {
             Self::H1(s) => s.is_body_done(),
             Self::H2(s) => s.is_body_done(),
+            Self::H3(s) => s.is_body_done(),
             Self::Subrequest(s) => s.is_body_done(),
             Self::Custom(s) => s.is_body_done(),
         }
@@ -460,11 +514,13 @@ impl Session {
     /// for H1 chunked encoding, this will end the last empty chunk
     /// for H1 content-length, this has no effect.
     /// for H2, this will send an empty DATA frame with END_STREAM flag
+    /// for H3, this will send a FIN_STREAM frame on the underlying QUIC stream
     /// for subrequest, this will send a Done http task
     pub async fn finish_body(&mut self) -> Result<()> {
         match self {
             Self::H1(s) => s.finish_body().await.map(|_| ()),
             Self::H2(s) => s.finish(),
+            Self::H3(s) => s.finish().await,
             Self::Subrequest(s) => s.finish().await.map(|_| ()),
             Self::Custom(s) => s.finish().await,
         }
@@ -531,6 +587,7 @@ impl Session {
         match self {
             Self::H1(s) => s.is_body_empty(),
             Self::H2(s) => s.is_body_empty(),
+            Self::H3(s) => s.is_body_empty(),
             Self::Subrequest(s) => s.is_body_empty(),
             Self::Custom(s) => s.is_body_empty(),
         }
@@ -540,6 +597,7 @@ impl Session {
         match self {
             Self::H1(s) => s.retry_buffer_truncated(),
             Self::H2(s) => s.retry_buffer_truncated(),
+            Self::H3(s) => s.retry_buffer_truncated(),
             Self::Subrequest(s) => s.retry_buffer_truncated(),
             Self::Custom(s) => s.retry_buffer_truncated(),
         }
@@ -549,6 +607,7 @@ impl Session {
         match self {
             Self::H1(s) => s.enable_retry_buffering(),
             Self::H2(s) => s.enable_retry_buffering(),
+            Self::H3(s) => s.enable_retry_buffering(),
             Self::Subrequest(s) => s.enable_retry_buffering(),
             Self::Custom(s) => s.enable_retry_buffering(),
         }
@@ -558,6 +617,7 @@ impl Session {
         match self {
             Self::H1(s) => s.get_retry_buffer(),
             Self::H2(s) => s.get_retry_buffer(),
+            Self::H3(s) => s.get_retry_buffer(),
             Self::Subrequest(s) => s.get_retry_buffer(),
             Self::Custom(s) => s.get_retry_buffer(),
         }
@@ -569,6 +629,7 @@ impl Session {
         match self {
             Self::H1(s) => s.read_body_or_idle(no_body_expected).await,
             Self::H2(s) => s.read_body_or_idle(no_body_expected).await,
+            Self::H3(s) => s.read_body_or_idle(no_body_expected).await,
             Self::Subrequest(s) => s.read_body_or_idle(no_body_expected).await,
             Self::Custom(s) => s.read_body_or_idle(no_body_expected).await,
         }
@@ -577,54 +638,49 @@ impl Session {
     pub fn as_http1(&self) -> Option<&SessionV1> {
         match self {
             Self::H1(s) => Some(s),
-            Self::H2(_) => None,
-            Self::Subrequest(_) => None,
-            Self::Custom(_) => None,
+            _ => None,
         }
     }
 
     pub fn as_http2(&self) -> Option<&SessionV2> {
         match self {
-            Self::H1(_) => None,
             Self::H2(s) => Some(s),
-            Self::Subrequest(_) => None,
-            Self::Custom(_) => None,
+            _ => None,
         }
     }
 
     pub fn as_subrequest(&self) -> Option<&SessionSubrequest> {
         match self {
-            Self::H1(_) => None,
-            Self::H2(_) => None,
             Self::Subrequest(s) => Some(s),
-            Self::Custom(_) => None,
+            _ => None,
         }
     }
 
     pub fn as_subrequest_mut(&mut self) -> Option<&mut SessionSubrequest> {
         match self {
-            Self::H1(_) => None,
-            Self::H2(_) => None,
             Self::Subrequest(s) => Some(s),
-            Self::Custom(_) => None,
+            _ => None,
         }
     }
 
     pub fn as_custom(&self) -> Option<&dyn SessionCustom> {
         match self {
-            Self::H1(_) => None,
-            Self::H2(_) => None,
-            Self::Subrequest(_) => None,
             Self::Custom(c) => Some(c.as_ref()),
+            _ => None,
         }
     }
 
     pub fn as_custom_mut(&mut self) -> Option<&mut Box<dyn SessionCustom>> {
         match self {
-            Self::H1(_) => None,
-            Self::H2(_) => None,
-            Self::Subrequest(_) => None,
             Self::Custom(c) => Some(c),
+            _ => None,
+        }
+    }
+
+    pub fn as_http3(&self) -> Option<&SessionV3> {
+        match self {
+            Self::H3(s) => Some(s),
+            _ => None,
         }
     }
 
@@ -636,6 +692,10 @@ impl Session {
                 Box::new(ResponseHeader::build(100, Some(0)).unwrap()),
                 false,
             ),
+            Self::H3(s) => {
+                s.write_response_header(Box::new(ResponseHeader::build(100, Some(0))?), false)
+                    .await
+            }
             Self::Subrequest(s) => s.write_continue_response().await,
             // TODO(slava): is there any write_continue_response calls?
             Self::Custom(s) => {
@@ -653,6 +713,7 @@ impl Session {
         match self {
             Self::H1(s) => s.is_upgrade_req(),
             Self::H2(_) => false,
+            Self::H3(_) => false,
             Self::Subrequest(s) => s.is_upgrade_req(),
             Self::Custom(_) => false,
         }
@@ -663,6 +724,7 @@ impl Session {
         match self {
             Self::H1(s) => s.body_bytes_sent(),
             Self::H2(s) => s.body_bytes_sent(),
+            Self::H3(s) => s.body_bytes_sent(),
             Self::Subrequest(s) => s.body_bytes_sent(),
             Self::Custom(s) => s.body_bytes_sent(),
         }
@@ -673,6 +735,7 @@ impl Session {
         match self {
             Self::H1(s) => s.body_bytes_read(),
             Self::H2(s) => s.body_bytes_read(),
+            Self::H3(s) => s.body_bytes_read(),
             Self::Subrequest(s) => s.body_bytes_read(),
             Self::Custom(s) => s.body_bytes_read(),
         }
@@ -683,6 +746,7 @@ impl Session {
         match self {
             Self::H1(s) => Some(s.digest()),
             Self::H2(s) => s.digest(),
+            Self::H3(s) => s.digest(),
             Self::Subrequest(s) => s.digest(),
             Self::Custom(s) => s.digest(),
         }
@@ -690,11 +754,12 @@ impl Session {
 
     /// Return a mutable [Digest] reference for the connection.
     ///
-    /// Will return `None` if multiple H2 streams are open.
+    /// Will return `None` if this is an H2 or H3 session and multiple streams are open.
     pub fn digest_mut(&mut self) -> Option<&mut Digest> {
         match self {
             Self::H1(s) => Some(s.digest_mut()),
             Self::H2(s) => s.digest_mut(),
+            Self::H3(s) => s.digest_mut(),
             Self::Subrequest(s) => s.digest_mut(),
             Self::Custom(s) => s.digest_mut(),
         }
@@ -705,6 +770,7 @@ impl Session {
         match self {
             Self::H1(s) => s.client_addr(),
             Self::H2(s) => s.client_addr(),
+            Self::H3(s) => s.client_addr(),
             Self::Subrequest(s) => s.client_addr(),
             Self::Custom(s) => s.client_addr(),
         }
@@ -715,6 +781,7 @@ impl Session {
         match self {
             Self::H1(s) => s.server_addr(),
             Self::H2(s) => s.server_addr(),
+            Self::H3(s) => s.server_addr(),
             Self::Subrequest(s) => s.server_addr(),
             Self::Custom(s) => s.server_addr(),
         }
@@ -726,6 +793,7 @@ impl Session {
         match self {
             Self::H1(s) => Some(s.stream()),
             Self::H2(_) => None,
+            Self::H3(_) => None,
             Self::Subrequest(_) => None,
             Self::Custom(_) => None,
         }

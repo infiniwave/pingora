@@ -74,7 +74,8 @@ pub mod tls;
 #[cfg(not(feature = "any_tls"))]
 pub use crate::tls::listeners as tls;
 
-use crate::protocols::{l4::socket::SocketAddr, tls::TlsRef, Stream};
+use crate::protocols::tls::quic::server::handshake as quic_handshake;
+use crate::protocols::{l4::socket::SocketAddr, tls::TlsRef, ConnectionState, Stream};
 
 #[cfg(unix)]
 use crate::server::ListenFds;
@@ -83,12 +84,13 @@ use async_trait::async_trait;
 use pingora_error::Result;
 use std::{any::Any, fs::Permissions, sync::Arc};
 
-use l4::{ListenerEndpoint, Stream as L4Stream};
+use l4::{ListenerEndpoint, ServerProtocol, Stream as L4Stream};
 use tls::{Acceptor, TlsSettings};
 
+use crate::protocols::l4::quic::QuicHttp3Configs;
 pub use crate::protocols::tls::ALPN;
 use crate::protocols::GetSocketDigest;
-pub use l4::{ServerAddress, TcpSocketOptions};
+pub use l4::{ServerAddress, TcpSocketOptions, UdpSocketOptions};
 
 /// The APIs to customize things like certificate during TLS server side handshake
 #[async_trait]
@@ -187,6 +189,9 @@ impl UninitializedStream {
         if let Some(tls) = self.tls {
             let tls_stream = tls.tls_handshake(self.l4).await?;
             Ok(Box::new(tls_stream))
+        } else if self.l4.is_quic_connection() {
+            let quic_stream = quic_handshake(self.l4).await?;
+            Ok(Box::new(quic_stream))
         } else {
             Ok(Box::new(self.l4))
         }
@@ -223,6 +228,18 @@ impl Listeners {
         listeners
     }
 
+    /// Create a new [`Listeners`] with a QUIC server endpoint from the given string and
+    /// according [`QuicHttp3Configs`].
+    pub fn quic(addr: &str, configs: QuicHttp3Configs) -> Result<Self> {
+        let mut listeners = Self::new();
+        listeners.add_address(ServerAddress::Udp(
+            addr.into(),
+            None,
+            ServerProtocol::Quic(configs),
+        ));
+        Ok(listeners)
+    }
+
     /// Create a new [`Listeners`] with a Unix domain socket endpoint from the given string.
     #[cfg(unix)]
     pub fn uds(addr: &str, perm: Option<Permissions>) -> Self {
@@ -239,6 +256,29 @@ impl Listeners {
         let mut listeners = Self::new();
         listeners.add_tls(addr, cert_path, key_path)?;
         Ok(listeners)
+    }
+
+    /// Add a QUIC endpoint to `self`.
+    pub fn add_quic(&mut self, addr: &str, configs: QuicHttp3Configs) {
+        self.add_address(ServerAddress::Udp(
+            addr.into(),
+            None,
+            ServerProtocol::Quic(configs),
+        ));
+    }
+
+    /// Add a QUIC endpoint to `self`, with the given [`UdpSocketOptions`] and [`QuicHttp3Configs`].
+    pub fn add_quic_with_settings(
+        &mut self,
+        addr: &str,
+        sock_opt: Option<UdpSocketOptions>,
+        configs: QuicHttp3Configs,
+    ) {
+        self.add_address(ServerAddress::Udp(
+            addr.into(),
+            sock_opt,
+            ServerProtocol::Quic(configs),
+        ));
     }
 
     /// Add a TCP endpoint to `self`.

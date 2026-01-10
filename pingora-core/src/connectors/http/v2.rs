@@ -12,21 +12,22 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::HttpSession;
+//! Connecting to HTTP 2 servers
+
+use super::{HttpSession, InUsePool};
 use crate::connectors::{ConnectorOptions, TransportConnector};
 use crate::protocols::http::custom::client::Session;
 use crate::protocols::http::v1::client::HttpSession as Http1Session;
 use crate::protocols::http::v2::client::{drive_connection, Http2Session};
-use crate::protocols::{Digest, Stream, UniqueIDType};
+use crate::protocols::{Digest, Stream, UniqueID, UniqueIDType};
 use crate::upstreams::peer::{Peer, ALPN};
 
 use bytes::Bytes;
 use h2::client::SendRequest;
 use log::debug;
-use parking_lot::{Mutex, RwLock};
+use parking_lot::Mutex;
 use pingora_error::{Error, ErrorType::*, OrErr, Result};
-use pingora_pool::{ConnectionMeta, ConnectionPool, PoolNode};
-use std::collections::HashMap;
+use pingora_pool::{ConnectionMeta, ConnectionPool};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -210,16 +211,22 @@ impl InUsePool {
     }
 }
 
+impl UniqueID for ConnectionRef {
+    fn id(&self) -> UniqueIDType {
+        self.0.id
+    }
+}
+
 const DEFAULT_POOL_SIZE: usize = 128;
 
-/// Http2 connector
+/// HTTP 2 connector
 pub struct Connector {
     // just for creating connections, the Stream of h2 should be reused
     transport: TransportConnector,
     // the h2 connection idle pool
     idle_pool: Arc<ConnectionPool<ConnectionRef>>,
     // the pool of h2 connections that have ongoing streams
-    in_use_pool: InUsePool,
+    in_use_pool: InUsePool<ConnectionRef>,
 }
 
 impl Connector {
@@ -487,7 +494,7 @@ mod tests {
             .await
             .unwrap();
         match h2 {
-            HttpSession::H1(_) => panic!("expect h2"),
+            HttpSession::H1(_) | HttpSession::H3(_) => panic!("expect h2"),
             HttpSession::H2(h2_stream) => assert!(!h2_stream.ping_timedout()),
             HttpSession::Custom(_) => panic!("expect h2"),
         }
@@ -506,8 +513,7 @@ mod tests {
             .unwrap();
         match h2 {
             HttpSession::H1(_) => {}
-            HttpSession::H2(_) => panic!("expect h1"),
-            HttpSession::Custom(_) => panic!("expect h1"),
+            _ => panic!("expect h1"),
         }
     }
 
@@ -522,8 +528,7 @@ mod tests {
             .unwrap();
         match h2 {
             HttpSession::H1(_) => {}
-            HttpSession::H2(_) => panic!("expect h1"),
-            HttpSession::Custom(_) => panic!("expect h1"),
+            _ => panic!("expect h1"),
         }
     }
 
@@ -539,9 +544,8 @@ mod tests {
             .await
             .unwrap();
         let h2_1 = match h2 {
-            HttpSession::H1(_) => panic!("expect h2"),
             HttpSession::H2(h2_stream) => h2_stream,
-            HttpSession::Custom(_) => panic!("expect h2"),
+            _ => panic!("expect h2"),
         };
 
         let id = h2_1.conn.id();
@@ -575,9 +579,8 @@ mod tests {
             .await
             .unwrap();
         let h2_1 = match h2 {
-            HttpSession::H1(_) => panic!("expect h2"),
             HttpSession::H2(h2_stream) => h2_stream,
-            HttpSession::Custom(_) => panic!("expect h2"),
+            _ => panic!("expect h2"),
         };
 
         let id = h2_1.conn.id();

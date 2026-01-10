@@ -14,12 +14,13 @@
 
 use crate::protocols::raw_connect::ProxyDigest;
 use crate::protocols::{
-    GetProxyDigest, GetSocketDigest, GetTimingDigest, Peek, SocketDigest, Ssl, TimingDigest,
+    ConnectionState, GetProxyDigest, GetSocketDigest, GetTimingDigest, Peek, SocketDigest, Ssl, TimingDigest,
     UniqueID, UniqueIDType,
 };
 use async_trait::async_trait;
 use core::pin::Pin;
 use core::task::{Context, Poll};
+use pingora_cache::lock::WritePermit;
 use std::io::Cursor;
 use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncWrite, Error, ReadBuf};
@@ -72,6 +73,8 @@ impl UniqueID for DummyIO {
         0 // placeholder
     }
 }
+
+impl ConnectionState for DummyIO {}
 
 impl Ssl for DummyIO {}
 

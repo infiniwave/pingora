@@ -745,6 +745,7 @@ pub fn http_req_header_to_wire(req: &RequestHeader) -> Option<BytesMut> {
         Version::HTTP_10 => "HTTP/1.0",
         Version::HTTP_11 => "HTTP/1.1",
         Version::HTTP_2 => "HTTP/2",
+        Version::HTTP_3 => "HTTP/3",
         _ => {
             return None; /*TODO: unsupported version */
         }

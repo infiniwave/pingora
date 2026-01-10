@@ -19,12 +19,14 @@ use std::time::Duration;
 
 use super::v2::client::Http2Session;
 use super::{custom::client::Session, v1::client::HttpSession as Http1Session};
+use super::v3::client::Http3Session;
 use crate::protocols::{Digest, SocketAddr, Stream};
 
 /// A type for Http client session. It can be either an Http1 connection or an Http2 stream.
 pub enum HttpSession<S = ()> {
     H1(Http1Session),
     H2(Http2Session),
+    H3(Http3Session),
     Custom(S),
 }
 
@@ -32,32 +34,35 @@ impl<S: Session> HttpSession<S> {
     pub fn as_http1(&self) -> Option<&Http1Session> {
         match self {
             Self::H1(s) => Some(s),
-            Self::H2(_) => None,
-            Self::Custom(_) => None,
+            _ => None,
         }
     }
 
     pub fn as_http2(&self) -> Option<&Http2Session> {
         match self {
-            Self::H1(_) => None,
             Self::H2(s) => Some(s),
-            Self::Custom(_) => None,
+            _ => None,
         }
     }
 
     pub fn as_custom(&self) -> Option<&S> {
         match self {
-            Self::H1(_) => None,
-            Self::H2(_) => None,
             Self::Custom(c) => Some(c),
+            _ => None,
         }
     }
 
     pub fn as_custom_mut(&mut self) -> Option<&mut S> {
         match self {
-            Self::H1(_) => None,
-            Self::H2(_) => None,
             Self::Custom(c) => Some(c),
+            _ => None,
+        }
+    }
+
+    pub fn as_http3(&self) -> Option<&Http3Session> {
+        match self {
+            Self::H3(s) => Some(s),
+            _ => None,
         }
     }
 
@@ -71,6 +76,7 @@ impl<S: Session> HttpSession<S> {
                 Ok(())
             }
             HttpSession::H2(h2) => h2.write_request_header(req, false),
+            HttpSession::H3(h3) => h3.write_request_header(req),
             HttpSession::Custom(c) => c.write_request_header(req, false).await,
         }
     }
@@ -84,6 +90,7 @@ impl<S: Session> HttpSession<S> {
                 Ok(())
             }
             HttpSession::H2(h2) => h2.write_request_body(data, end).await,
+            HttpSession::H3(h3) => h3.write_request_body(data, end).await,
             HttpSession::Custom(c) => c.write_request_body(data, end).await,
         }
     }
@@ -96,6 +103,7 @@ impl<S: Session> HttpSession<S> {
                 Ok(())
             }
             HttpSession::H2(h2) => h2.finish_request_body(),
+            HttpSession::H3(h3) => h3.finish_request_body(),
             HttpSession::Custom(c) => c.finish_request_body().await,
         }
     }
@@ -107,6 +115,7 @@ impl<S: Session> HttpSession<S> {
         match self {
             HttpSession::H1(h1) => h1.read_timeout = timeout,
             HttpSession::H2(h2) => h2.read_timeout = timeout,
+            HttpSession::H3(h3) => h3.read_timeout = timeout,
             HttpSession::Custom(c) => c.set_read_timeout(timeout),
         }
     }
@@ -114,10 +123,13 @@ impl<S: Session> HttpSession<S> {
     /// Set the write timeout for writing header and body.
     ///
     /// The timeout is per write operation, not on the overall time writing the entire request.
+    ///
+    /// This is a noop for h3.
     pub fn set_write_timeout(&mut self, timeout: Option<Duration>) {
         match self {
             HttpSession::H1(h1) => h1.write_timeout = timeout,
             HttpSession::H2(h2) => h2.write_timeout = timeout,
+            HttpSession::H3(_) => { /* no write timeout as timeout is a connection property */ }
             HttpSession::Custom(c) => c.set_write_timeout(timeout),
         }
     }
@@ -132,6 +144,7 @@ impl<S: Session> HttpSession<S> {
                 Ok(())
             }
             HttpSession::H2(h2) => h2.read_response_header().await,
+            HttpSession::H3(h3) => h3.read_response_header().await,
             HttpSession::Custom(c) => c.read_response_header().await,
         }
     }
@@ -143,6 +156,7 @@ impl<S: Session> HttpSession<S> {
         match self {
             HttpSession::H1(h1) => h1.read_body_bytes().await,
             HttpSession::H2(h2) => h2.read_response_body().await,
+            HttpSession::H3(h3) => h3.read_response_body().await,
             HttpSession::Custom(c) => c.read_response_body().await,
         }
     }
@@ -152,6 +166,7 @@ impl<S: Session> HttpSession<S> {
         match self {
             HttpSession::H1(h1) => h1.is_body_done(),
             HttpSession::H2(h2) => h2.response_finished(),
+            HttpSession::H3(h3) => h3.response_finished(),
             HttpSession::Custom(c) => c.response_finished(),
         }
     }
@@ -159,10 +174,12 @@ impl<S: Session> HttpSession<S> {
     /// Give up the http session abruptly.
     /// For H1 this will close the underlying connection
     /// For H2 this will send RST_STREAM frame to end this stream if the stream has not ended at all
+    /// For H3 this will send a `STOP_SENDING` and a `RESET_STREAM` for the Quic stream to the client.
     pub async fn shutdown(&mut self) {
         match self {
             Self::H1(s) => s.shutdown().await,
             Self::H2(s) => s.shutdown(),
+            Self::H3(s) => s.shutdown(),
             Self::Custom(c) => c.shutdown(1, "shutdown").await,
         }
     }
@@ -174,6 +191,7 @@ impl<S: Session> HttpSession<S> {
         match self {
             Self::H1(s) => s.resp_header(),
             Self::H2(s) => s.response_header(),
+            Self::H3(s) => s.response_header(),
             Self::Custom(c) => c.response_header(),
         }
     }
@@ -186,17 +204,19 @@ impl<S: Session> HttpSession<S> {
         match self {
             Self::H1(s) => Some(s.digest()),
             Self::H2(s) => s.digest(),
+            Self::H3(s) => s.digest(),
             Self::Custom(c) => c.digest(),
         }
     }
 
     /// Return a mutable [Digest] reference for the connection.
     ///
-    /// Will return `None` if this is an H2 session and multiple streams are open.
+    /// Will return `None` if this is an H2 or H3 session and multiple streams are open.
     pub fn digest_mut(&mut self) -> Option<&mut Digest> {
         match self {
             Self::H1(s) => Some(s.digest_mut()),
             Self::H2(s) => s.digest_mut(),
+            Self::H3(s) => s.digest_mut(),
             Self::Custom(s) => s.digest_mut(),
         }
     }
@@ -206,6 +226,7 @@ impl<S: Session> HttpSession<S> {
         match self {
             Self::H1(s) => s.server_addr(),
             Self::H2(s) => s.server_addr(),
+            Self::H3(s) => s.server_addr(),
             Self::Custom(s) => s.server_addr(),
         }
     }
@@ -215,16 +236,18 @@ impl<S: Session> HttpSession<S> {
         match self {
             Self::H1(s) => s.client_addr(),
             Self::H2(s) => s.client_addr(),
+            Self::H3(s) => s.client_addr(),
             Self::Custom(s) => s.client_addr(),
         }
     }
 
     /// Get the reference of the [Stream] that this HTTP/1 session is operating upon.
-    /// None if the HTTP session is over H2
+    /// None if the HTTP session is over H2 or H3
     pub fn stream(&self) -> Option<&Stream> {
         match self {
             Self::H1(s) => Some(s.stream()),
             Self::H2(_) => None,
+            Self::H3(_) => None,
             Self::Custom(_) => None,
         }
     }
